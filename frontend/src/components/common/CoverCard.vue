@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { Cover } from '@/types/cover'
+import type { CoverReview } from '@/utils/review'
+import { CLEAN_REVIEW } from '@/utils/review'
 import { joinCn } from '@/utils/id'
 import ScarceTag from './ScarceTag.vue'
 
@@ -11,8 +13,10 @@ const props = withDefaults(
     /** 关联邮戳数，行内展示 */
     pmCount?: number
     active?: boolean
+    /** 核对结论；有待核对项时卡片标红并写明原因 */
+    review?: CoverReview
   }>(),
-  { stampCount: 0, pmCount: 0, active: false }
+  { stampCount: 0, pmCount: 0, active: false, review: () => CLEAN_REVIEW }
 )
 
 const emit = defineEmits<{ select: [cover: Cover] }>()
@@ -27,7 +31,11 @@ function routeText(cover: Cover): string {
 </script>
 
 <template>
-  <article class="cover-card" :class="{ 'is-active': active }" @click="onSelect">
+  <article
+    class="cover-card"
+    :class="{ 'is-active': active, 'is-review': review.needsReview }"
+    @click="onSelect"
+  >
     <div class="cover-card__figure">
       <img v-if="cover.frontImage" :src="cover.frontImage" :alt="`${cover.coverNo} 封图`" />
       <span v-else class="cover-card__figure-empty">暂无封图</span>
@@ -38,9 +46,20 @@ function routeText(cover: Cover): string {
         <span class="cover-card__tags">
           <el-tag v-if="cover.registered" size="small" type="danger" effect="plain">给据</el-tag>
           <ScarceTag :level="cover.conditionGrade" kind="grade" />
+          <el-tooltip
+            v-if="review.needsReview"
+            :content="review.summary"
+            placement="top"
+            :show-after="120"
+          >
+            <el-tag size="small" type="danger" effect="dark">待核对</el-tag>
+          </el-tooltip>
         </span>
       </header>
       <p class="cover-card__route">{{ routeText(cover) }}</p>
+      <p v-if="review.needsReview" class="cover-card__review" :title="review.summary">
+        {{ review.summary }}
+      </p>
       <p class="cover-card__meta">
         寄出 {{ cover.postDate || '待考' }} · 到达 {{ cover.arriveDate || '待考' }}
       </p>
@@ -68,6 +87,13 @@ function routeText(cover: Cover): string {
   border-color: #8c3b2e;
   box-shadow: 0 6px 18px rgba(140, 59, 46, 0.14);
   transform: translateY(-2px);
+}
+.cover-card.is-review {
+  border-color: #d46a4f;
+  background: #fff7f4;
+}
+.cover-card.is-review:hover {
+  box-shadow: 0 6px 18px rgba(176, 60, 40, 0.18);
 }
 .cover-card__figure {
   flex: 0 0 128px;
@@ -106,12 +132,22 @@ function routeText(cover: Cover): string {
 .cover-card__tags {
   display: inline-flex;
   gap: 6px;
+  align-items: center;
 }
 .cover-card__route {
   margin: 6px 0 2px;
   font-size: 15px;
   font-weight: 600;
   color: #3f3226;
+}
+.cover-card__review {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #b03c26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cover-card__meta,
 .cover-card__via {

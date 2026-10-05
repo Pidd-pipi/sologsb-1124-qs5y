@@ -57,8 +57,8 @@ docker compose down
 ## 五、共享组件与 hooks / utils
 
 - 组件：`frontend/src/components/common/` 下的 `StampCard.vue`、`CoverCard.vue`、`RouteTimeline.vue`、`ScarceTag.vue`
-- hooks：`frontend/src/hooks/useCatalogFilter.ts`（统一过滤与排序）、`frontend/src/hooks/useCoverRoute.ts`（寄递时间轴与在途天数）
-- utils：`frontend/src/utils/db.ts`（Dexie 封装/版本迁移/样例数据）、`frontend/src/utils/dateRange.ts`（年代区间、干支互转、日期先后校验）、`frontend/src/utils/id.ts`（编目号与唯一键）、`frontend/src/utils/draft.ts`（localStorage 草稿）
+- hooks：`frontend/src/hooks/useCatalogFilter.ts`（统一过滤与排序）、`frontend/src/hooks/useCoverRoute.ts`（寄递时间轴与在途天数）、`frontend/src/hooks/useCoverReview.ts`（实寄封待核对结论）
+- utils：`frontend/src/utils/db.ts`（Dexie 封装/版本迁移/样例数据）、`frontend/src/utils/dateRange.ts`（年代区间、干支互转、日期先后校验）、`frontend/src/utils/review.ts`（实寄封核对规则：日期倒挂 / 缺到达日 / 超出戳年代 / 缺节点日期）、`frontend/src/utils/timeline.ts`（寄递时间轴纯函数）、`frontend/src/utils/catalogEvents.ts`（多标签页数据变更广播）、`frontend/src/utils/id.ts`（编目号与唯一键）、`frontend/src/utils/draft.ts`（localStorage 草稿）
 
 ## 六、本地开发（可选，需要本机 Node 20+）
 
@@ -102,3 +102,10 @@ sologsb-1124/
 - **编目数据**：IndexedDB（Dexie，库名 `gbpostmark`）。表结构含版本号，`version(2)` 会把戳样与封图迁移到独立的 `assets` 表并补齐历史记录缺省字段；首次运行写入样例数据，便于直接查看各页面效果。
 - **表单草稿**：localStorage，键名前缀 `gbpostmark:draft:`（邮戳、实寄封、邮路各一份），刷新或误关页面后可恢复，可一键清除。
 - **无后端**：不请求任何外部接口，容器无状态，不使用数据库服务与命名卷；清除浏览器站点数据即等于清空数据。
+
+## 九、关联核对与多标签页并发
+
+- **关联信息变动后重新核对**：邮路节点日期或邮戳使用年代被改动后，系统按当前数据重新核对关联实寄封，规则包括：① 寄出/中转/到达日期倒挂；② 缺寄出或到达日；③ 寄出/到达日期超出任一关联邮戳的使用年代；④ 所挂邮路节点缺日期。核对不通过的封会在详情页与目录（卡片、表格、检索结果）标为「待核对」并逐条写明原因，旧的在途天数不再展示（显示为「待核对」），问题消除后自动恢复。
+- **多标签页实时同步**：一个标签页保存后，通过 `BroadcastChannel`（不支持时回退到 `storage` 事件）通知其他标签页，相关 Pinia 列表与打开的封详情会自动重载并重算，不再停在旧数字上。
+- **并发保存保护**：实寄封整表编辑与邮戳编辑以 `updatedAt` 作为乐观锁版本令牌；当后到的保存发现对方已先保存时会拒绝写入，弹窗提示「对方已改」、列出双方字段差异，并保留对方版本——可「载入对方版本继续编辑」或「把我的改动存为草稿」，不会直接覆盖。品相标记、换图、挂摘邮路等单字段快速操作仍即时生效。
+

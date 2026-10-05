@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db, saveAsset } from '@/utils/db'
+import { emitChange } from '@/utils/catalogEvents'
 import type { Postmark } from '@/types/postmark'
 import { nextSerialNo, nowIso } from '@/utils/id'
 
@@ -50,17 +51,47 @@ export const usePostmarkStore = defineStore('postmark', () => {
         updatedAt: now
       })
     }
+    emitChange('postmark', id)
     await load()
     return id
   }
 
   async function update(id: number, patch: Partial<Postmark>): Promise<void> {
     await db.postmarks.update(id, { ...patch, updatedAt: nowIso() })
+    emitChange('postmark', id)
     await load()
+  }
+
+  /**
+   * 带并发校验的邮戳整表保存：库中 updatedAt 与本标签页所持版本不一致时，
+   * 返回 conflict 并带回对方版本，不覆盖。
+   */
+  async function checkedUpdate(
+    id: number,
+    record: Postmark,
+    baseUpdatedAt: string
+  ): Promise<{ savedAt: string } | { conflict: boolean; current: Postmark | null }> {
+    return db.transaction('rw', db.postmarks, async () => {
+      const current = await db.postmarks.get(id)
+      if (!current) return { conflict: true, current: null }
+      if (current.updatedAt !== baseUpdatedAt) return { conflict: true, current }
+      const savedAt = nowIso()
+      const next: Postmark = {
+        ...record,
+        id,
+        pmNo: current.pmNo,
+        createdAt: current.createdAt,
+        updatedAt: savedAt
+      }
+      await db.postmarks.put(next)
+      emitChange('postmark', id)
+      return { savedAt }
+    })
   }
 
   async function remove(id: number): Promise<void> {
     await db.postmarks.delete(id)
+    emitChange('postmark', id)
     await load()
   }
 
@@ -92,6 +123,7 @@ export const usePostmarkStore = defineStore('postmark', () => {
     nextPmNo,
     create,
     update,
+    checkedUpdate,
     remove,
     byId,
     labelOf

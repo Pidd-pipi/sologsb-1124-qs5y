@@ -6,6 +6,7 @@ import type { UploadFile } from 'element-plus'
 import CoverCard from '@/components/common/CoverCard.vue'
 import ScarceTag from '@/components/common/ScarceTag.vue'
 import { useCatalogFilter } from '@/hooks/useCatalogFilter'
+import { useCoverReviews } from '@/hooks/useCoverReview'
 import { useCoverStore } from '@/stores/coverStore'
 import { usePostmarkStore } from '@/stores/postmarkStore'
 import { useRouteStore } from '@/stores/routeStore'
@@ -22,6 +23,7 @@ const routeStore = useRouteStore()
 
 const source = computed(() => coverStore.list)
 const { filters, filtered, activeCount, reset } = useCatalogFilter<Cover>('cover', source)
+const coverReviews = useCoverReviews()
 
 const viewMode = ref<'card' | 'table'>('card')
 const dialogVisible = ref(false)
@@ -172,7 +174,12 @@ function routeLabel(routeId: number | null): string {
       <div>
         <h1 class="gb-page__title">实寄封目录</h1>
         <p class="gb-page__subtitle">
-          共 {{ coverStore.total }} 封，其中给据邮件 {{ coverStore.registeredCount }} 封；按收寄地、年代、品相、是否给据筛选。
+          共 {{ coverStore.total }} 封，其中给据邮件 {{ coverStore.registeredCount }} 封；
+          <el-tag v-if="coverReviews.pendingCount.value" size="small" type="danger" effect="plain">
+            {{ coverReviews.pendingCount.value }} 封待核对
+          </el-tag>
+          <template v-else>暂无待核对封</template>
+          ；按收寄地、年代、品相、是否给据筛选。
         </p>
       </div>
       <div class="cover-page__actions">
@@ -231,6 +238,7 @@ function routeLabel(routeId: number | null): string {
         :cover="cover"
         :stamp-count="coverStore.frankingCount(cover)"
         :pm-count="coverStore.cancelCount(cover)"
+        :review="coverReviews.of(cover.id)"
         @select="openDetail"
       />
     </div>
@@ -257,6 +265,19 @@ function routeLabel(routeId: number | null): string {
       <el-table-column label="品相" width="90">
         <template #default="{ row }">
           <ScarceTag :level="row.conditionGrade" kind="grade" />
+        </template>
+      </el-table-column>
+      <el-table-column label="核对" width="150">
+        <template #default="{ row }">
+          <el-tooltip
+            v-if="coverReviews.of(row.id).needsReview"
+            :content="coverReviews.of(row.id).summary"
+            placement="top"
+            :show-after="120"
+          >
+            <el-tag size="small" type="danger" effect="plain">待核对</el-tag>
+          </el-tooltip>
+          <el-tag v-else size="small" type="success" effect="plain">已核对</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="给据" width="80">

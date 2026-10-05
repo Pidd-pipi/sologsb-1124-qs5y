@@ -30,6 +30,11 @@ const sampleText = ref('')
 const imagePayload = ref<ImagePayload | null>(null)
 const draftHint = ref('')
 const form = reactive<Postmark>(createEmptyPostmark())
+/** 编辑模式下被编辑邮戳的 id 与版本令牌；null 表示新增 */
+const editingId = ref<number | null>(null)
+const editingBaseUpdatedAt = ref('')
+
+const dialogTitle = computed(() => (editingId.value == null ? '新增邮戳' : `编辑邮戳 ${form.pmNo}`))
 
 onMounted(async () => {
   if (!store.loaded) await store.load()
@@ -39,7 +44,7 @@ onMounted(async () => {
 watch(
   form,
   () => {
-    if (!dialogVisible.value) return
+    if (!dialogVisible.value || editingId.value != null) return
     saveDraft('postmark', { ...form, lettering: { ...form.lettering } })
     draftHint.value = nowIso()
   },
@@ -51,12 +56,27 @@ function openCreate(): void {
   form.pmNo = store.nextPmNo()
   form.lettering = { top: '', middle: '', bottom: '' }
   imagePayload.value = null
+  editingId.value = null
+  editingBaseUpdatedAt.value = ''
   const draft = loadDraft<Postmark>('postmark')
   if (draft) {
     Object.assign(form, draft)
     form.lettering = draft.lettering ?? { top: '', middle: '', bottom: '' }
     if (form.imageDataUrl) imagePayload.value = { dataUrl: form.imageDataUrl, fileName: '草稿戳样' }
   }
+  dialogVisible.value = true
+}
+
+/** 从详情抽屉进入编辑；以当前记录的 updatedAt 作为并发令牌。 */
+function openEdit(pm: Postmark): void {
+  if (typeof pm.id !== 'number') return
+  Object.assign(form, { ...pm, lettering: { ...pm.lettering } })
+  imagePayload.value = pm.imageDataUrl
+    ? { dataUrl: pm.imageDataUrl, fileName: '现有戳样' }
+    : null
+  editingId.value = pm.id
+  editingBaseUpdatedAt.value = pm.updatedAt
+  detailVisible.value = false
   dialogVisible.value = true
 }
 
@@ -95,6 +115,29 @@ async function submit(): Promise<void> {
     ElMessage.warning('使用年代的起始年不能晚于结束年')
     return
   }
+
+  // 编辑模式：带并发校验，对方先保存则不覆盖，提示后载入对方版本
+  if (editingId.value != null) {
+    const id = editingId.value
+    const record: Postmark = { ...form, id, lettering: { ...form.lettering } }
+    const result = await store.checkedUpdate(id, record, editingBaseUpdatedAt.value)
+    if ('conflict' in result) {
+      if (!result.current) {
+        ElMessage.error('该邮戳已被另一个标签页删除，无法保存')
+        dialogVisible.value = false
+        return
+      }
+      ElMessage.error('该邮戳已被另一个标签页修改，已为你载入对方版本，请核对后再保存')
+      Object.assign(form, { ...result.current, lettering: { ...result.current.lettering } })
+      editingBaseUpdatedAt.value = result.current.updatedAt
+      return
+    }
+    editingBaseUpdatedAt.value = result.savedAt
+    dialogVisible.value = false
+    ElMessage.success(`邮戳 ${form.pmNo} 已保存，关联实寄封已重新核对`)
+    return
+  }
+
   const pmNo = form.pmNo || store.nextPmNo()
   await store.create({ ...form, pmNo, lettering: { ...form.lettering } }, imagePayload.value)
   clearDraft('postmark')
@@ -227,9 +270,10 @@ async function copySample(): Promise<void> {
           <ScarceTag :level="row.scarceLevel" />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="190">
+      <el-table-column label="操作" width="230">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click.stop="showDetail(row)">查看</el-button>
+          <el-button size="small" link type="primary" @click.stop="openEdit(row)">编辑</el-button>
           <el-button size="small" link type="primary" @click.stop="generateSample(row)">
             生成戳样条目
           </el-button>
@@ -237,7 +281,7 @@ async function copySample(): Promise<void> {
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" title="新增邮戳" width="720px">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="720px">
       <el-form label-width="104px" label-position="right">
         <el-row :gutter="12">
           <el-col :span="12">
@@ -345,13 +389,18 @@ async function copySample(): Promise<void> {
       </el-form>
       <template #footer>
         <div class="postmark-page__footer">
-          <span class="postmark-page__draft">
+          <span v-if="editingId == null" class="postmark-page__draft">
             {{ draftHint ? '表单草稿已存入浏览器 localStorage' : '未保存草稿' }}
           </span>
+          <span v-else class="postmark-page__draft">
+            编辑模式：保存会重新核对关联实寄封；与另一标签页冲突时不会覆盖对方版本
+          </span>
           <span>
-            <el-button link type="info" @click="discardDraft">清除草稿</el-button>
+            <el-button v-if="editingId == null" link type="info" @click="discardDraft">清除草稿</el-button>
             <el-button @click="dialogVisible = false">取消</el-button>
-            <el-button type="primary" @click="submit">保存邮戳</el-button>
+            <el-button type="primary" @click="submit">
+              {{ editingId == null ? '保存邮戳' : '保存并重新核对' }}
+            </el-button>
           </span>
         </div>
       </template>
@@ -376,7 +425,10 @@ async function copySample(): Promise<void> {
           <div><dt>文字</dt><dd>{{ current.bilingual ? '中英双文字' : '单文字' }}</dd></div>
         </dl>
         <p class="postmark-page__note">{{ current.note || '暂无备注' }}</p>
-        <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+        <div class="postmark-page__detail-actions">
+          <el-button type="primary" @click="current && openEdit(current)">编辑（含使用年代）</el-button>
+          <el-button type="primary" plain @click="generateSample(current)">生成戳样条目</el-button>
+        </div>
       </div>
     </el-drawer>
 
@@ -420,5 +472,10 @@ async function copySample(): Promise<void> {
   font-size: 13px;
   color: var(--gb-muted);
   line-height: 1.6;
+}
+.postmark-page__detail-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 </style>

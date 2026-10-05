@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCoverStore } from '@/stores/coverStore'
 import { usePostmarkStore } from '@/stores/postmarkStore'
 import { useRouteStore } from '@/stores/routeStore'
+import { onCatalogChange } from '@/utils/catalogEvents'
 
 const current = useRoute()
 const router = useRouter()
@@ -37,6 +38,16 @@ const routeOptions = computed(() =>
 onMounted(async () => {
   await Promise.all([postmarkStore.load(), coverStore.load(), routeStore.load()])
 })
+
+// 另一个标签页改了邮戳/实寄封/邮路后，本标签页重新加载对应数据，
+// 使目录的待核对标记、详情的时间轴与在途天数立即按新数据重算。
+const offCatalogChange = onCatalogChange((message) => {
+  if (message.entity === 'postmark') void postmarkStore.load()
+  else if (message.entity === 'route') void routeStore.load()
+  else if (message.entity === 'cover') void coverStore.load()
+  else if (message.entity === 'stampEntry') void coverStore.load()
+})
+onUnmounted(offCatalogChange)
 </script>
 
 <template>

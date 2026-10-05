@@ -10,6 +10,7 @@ import { useCoverRoute } from '@/hooks/useCoverRoute'
 import { useCoverStore } from '@/stores/coverStore'
 import { usePostmarkStore } from '@/stores/postmarkStore'
 import { useRouteStore } from '@/stores/routeStore'
+import type { Cover } from '@/types/cover'
 import type { Postmark } from '@/types/postmark'
 import type { TimelineNode } from '@/types/route'
 import type { StamplessEntry } from '@/types/stampentry'
@@ -18,9 +19,10 @@ import {
   VARIETY_TYPES,
   createEmptyStampEntry
 } from '@/types/stampentry'
-import { CONDITION_GRADES } from '@/types/cover'
+import { CONDITION_GRADES, createEmptyCover } from '@/types/cover'
 import { loadAssets, saveAsset } from '@/utils/db'
 import { nowIso } from '@/utils/id'
+import { clearDraft, loadDraft, saveDraft } from '@/utils/draft'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
@@ -33,8 +35,7 @@ const coverId = computed<number | null>(() => {
   return Number.isFinite(n) && n > 0 ? n : null
 })
 
-const { cover, route, timeline, transitDays, missingDateNodes, chronological, error, load } =
-  useCoverRoute(coverId)
+const { cover, route, timeline, trustedTransitDays, review, error, load } = useCoverRoute(coverId)
 
 const frontUrl = ref('')
 const backUrl = ref('')
@@ -199,6 +200,190 @@ function backToList(): void {
 function openRoute(): void {
   if (route.value?.id != null) void router.push(`/routes/${route.value.id}`)
 }
+
+/* ------------------------- 编辑寄递事实（带并发校验） ------------------------- */
+
+const editDialog = ref(false)
+const editForm = reactive<Cover>(createEmptyCover())
+/** 打开对话框/上次成功保存时该封的版本时间戳，作为乐观锁令牌 */
+const baseUpdatedAt = ref('')
+const saving = ref(false)
+/** 冲突时对方已保存的现存版本 */
+const conflictCurrent = ref<Cover | null>(null)
+const conflictTime = ref('')
+/** 本标签页改动与对方版本的字段差异 */
+const conflictDiffs = ref<{ label: string; mine: string; theirs: string }[]>([])
+const hasEditDraft = ref(false)
+
+const EDIT_FIELDS: { key: keyof Cover; label: string }[] = [
+  { key: 'sentFrom', label: '寄出地' },
+  { key: 'sentTo', label: '收件地' },
+  { key: 'postDate', label: '寄出日期' },
+  { key: 'arriveDate', label: '到达日期' },
+  { key: 'routeId', label: '所属邮路' },
+  { key: 'viaPoints', label: '中转地' },
+  { key: 'cancelPmIds', label: '关联邮戳' },
+  { key: 'registered', label: '给据邮件' },
+  { key: 'conditionGrade', label: '品相' },
+  { key: 'acquireFrom', label: '来源' },
+  { key: 'price', label: '购入价' },
+  { key: 'storageAlbum', label: '藏册页位' },
+  { key: 'note', label: '备注' }
+]
+
+function draftKey(): string {
+  return `cover-edit:${coverId.value ?? ''}`
+}
+
+function fieldText(key: keyof Cover, value: unknown): string {
+  if (key === 'routeId') {
+    const id = typeof value === 'number' ? value : null
+    if (id == null) return '未挂邮路'
+    const rt = routeStore.byId(id)
+    return rt ? `${rt.routeNo} ${rt.name}` : `邮路 #${id}`
+  }
+  if (key === 'cancelPmIds') {
+    const ids = Array.isArray(value) ? (value as number[]) : []
+    return ids.length ? ids.map((id) => postmarkStore.labelOf(id)).join('、') : '无'
+  }
+  if (key === 'viaPoints') {
+    const pts = Array.isArray(value) ? (value as string[]) : []
+    return pts.length ? pts.join('、') : '直封'
+  }
+  if (key === 'registered') return value ? '是' : '否'
+  if (key === 'price') return `${Number(value) || 0} 元`
+  if (key === 'postDate' || key === 'arriveDate') return value ? String(value) : '待考'
+  return value === '' || value == null ? '未填' : String(value)
+}
+
+function buildDiffs(mine: Cover, theirs: Cover) {
+  return EDIT_FIELDS.map(({ key, label }) => {
+    const a = fieldText(key, mine[key])
+    const b = fieldText(key, theirs[key])
+    return a === b ? null : { label, mine: a, theirs: b }
+  }).filter((d): d is { label: string; mine: string; theirs: string } => d != null)
+}
+
+function assignEditForm(source: Cover): void {
+  Object.assign(editForm, {
+    ...createEmptyCover(),
+    ...source,
+    franking: source.franking.map((f) => ({ ...f })),
+    cancelPmIds: [...source.cancelPmIds],
+    viaPoints: [...source.viaPoints]
+  })
+}
+
+function resetConflict(): void {
+  conflictCurrent.value = null
+  conflictTime.value = ''
+  conflictDiffs.value = []
+}
+
+function openEditDialog(): void {
+  const c = cover.value
+  if (!c) return
+  assignEditForm(c)
+  baseUpdatedAt.value = c.updatedAt
+  resetConflict()
+  hasEditDraft.value = !!loadDraft<Cover>(draftKey())
+  editDialog.value = true
+}
+
+function restoreEditDraft(): void {
+  const draft = loadDraft<Cover>(draftKey())
+  if (!draft) {
+    ElMessage.info('没有可恢复的本地草稿')
+    return
+  }
+  assignEditForm(draft)
+  resetConflict()
+  hasEditDraft.value = false
+  ElMessage.success('已载入本地草稿，核对后可重新保存')
+}
+
+function formatTime(iso: string): string {
+  if (!iso) return ''
+  const t = Date.parse(iso)
+  return Number.isFinite(t) ? new Date(t).toLocaleString('zh-CN', { hour12: false }) : iso
+}
+
+async function submitEdit(): Promise<void> {
+  const id = coverId.value
+  if (id == null) return
+  if (!editForm.sentFrom.trim() || !editForm.sentTo.trim()) {
+    ElMessage.warning('请填写寄出地与收件地')
+    return
+  }
+  // 冲突未处理前不允许再保存，避免覆盖对方版本
+  if (conflictCurrent.value) {
+    ElMessage.warning('对方已修改该封，请先载入对方版本或把本地内容存为草稿')
+    return
+  }
+  saving.value = true
+  try {
+    const record: Cover = {
+      ...editForm,
+      franking: editForm.franking.map((f) => ({ ...f })),
+      cancelPmIds: [...editForm.cancelPmIds],
+      viaPoints: [...editForm.viaPoints]
+    }
+    const result = await coverStore.checkedUpdate(id, record, baseUpdatedAt.value)
+    if ('conflict' in result) {
+      if (!result.current) {
+        ElMessage.error('该实寄封已被另一个标签页删除，无法保存')
+        editDialog.value = false
+        return
+      }
+      // 对方先保存：保住对方版本，本标签页的内容保留在表单中，绝不覆盖
+      conflictCurrent.value = result.current
+      conflictTime.value = result.conflict.currentUpdatedAt
+      conflictDiffs.value = buildDiffs(record, result.current)
+      saveDraft(draftKey(), record)
+      hasEditDraft.value = true
+      ElMessage.error('该封已被另一个标签页修改，已为你保留对方版本，本地改动已存为草稿')
+      return
+    }
+    baseUpdatedAt.value = result.savedAt
+    clearDraft(draftKey())
+    hasEditDraft.value = false
+    editDialog.value = false
+    ElMessage.success('寄递事实已保存，关联核对已重新计算')
+    await Promise.all([coverStore.load(), load()])
+  } finally {
+    saving.value = false
+  }
+}
+
+/** 放弃本地改动，载入对方已保存的版本，令牌随之更新，可在此基础上继续编辑 */
+function adoptRemote(): void {
+  const remote = conflictCurrent.value
+  if (!remote) return
+  assignEditForm(remote)
+  baseUpdatedAt.value = remote.updatedAt
+  resetConflict()
+  ElMessage.success('已载入对方版本，可在其基础上继续编辑')
+}
+
+/** 把本地改动留作草稿并关闭，对方版本保持不动 */
+function keepMineAsDraft(): void {
+  saveDraft(draftKey(), { ...editForm })
+  resetConflict()
+  editDialog.value = false
+  ElMessage.info('本地改动已存为草稿，未覆盖对方版本')
+}
+
+const editPostmarkOptions = computed(() =>
+  postmarkStore.list.flatMap((pm) =>
+    typeof pm.id === 'number' ? [{ label: `${pm.pmNo} ${pm.office}`, value: pm.id }] : []
+  )
+)
+
+const editRouteOptions = computed(() =>
+  routeStore.list.flatMap((rt) =>
+    typeof rt.id === 'number' ? [{ label: `${rt.routeNo} ${rt.name}`, value: rt.id }] : []
+  )
+)
 </script>
 
 <template>
@@ -208,6 +393,8 @@ function openRoute(): void {
         <h1 class="gb-page__title">
           实寄封详情
           <span v-if="cover" class="cover-detail__no">{{ cover.coverNo }}</span>
+          <el-tag v-if="review.needsReview" type="danger" effect="dark" size="default">待核对</el-tag>
+          <el-tag v-else type="success" effect="plain" size="default">已核对</el-tag>
         </h1>
         <p class="gb-page__subtitle">
           <template v-if="cover">
@@ -219,6 +406,7 @@ function openRoute(): void {
       </div>
       <div class="cover-detail__actions">
         <el-button @click="backToList">返回目录</el-button>
+        <el-button v-if="cover" type="primary" @click="openEditDialog">编辑寄递事实</el-button>
         <el-button v-if="route" type="primary" plain @click="openRoute">打开邮路编辑器</el-button>
       </div>
     </header>
@@ -226,6 +414,19 @@ function openRoute(): void {
     <p v-if="error" class="gb-empty">{{ error }}</p>
 
     <template v-else-if="cover">
+      <el-alert
+        v-if="review.needsReview"
+        class="cover-detail__review"
+        type="error"
+        :closable="false"
+        show-icon
+        title="该封待核对：关联信息变动后重新核对发现以下问题，旧的在途天数已停止展示"
+      >
+        <ul class="cover-detail__review-list">
+          <li v-for="(item, i) in review.issues" :key="i">{{ item.message }}</li>
+        </ul>
+      </el-alert>
+
       <section class="gb-panel">
         <h2 class="gb-panel__title">寄递事实</h2>
         <dl class="gb-facts">
@@ -234,7 +435,16 @@ function openRoute(): void {
           <div><dt>收件地</dt><dd>{{ cover.sentTo }}</dd></div>
           <div><dt>寄出日期</dt><dd>{{ cover.postDate || '待考' }}</dd></div>
           <div><dt>到达日期</dt><dd>{{ cover.arriveDate || '待考' }}</dd></div>
-          <div><dt>在途天数</dt><dd>{{ transitDays == null ? '待考' : `${transitDays} 天` }}</dd></div>
+          <div>
+            <dt>在途天数</dt>
+            <dd>
+              <el-tag v-if="review.needsReview" size="small" type="danger" effect="plain">
+                待核对
+              </el-tag>
+              <template v-else-if="trustedTransitDays == null">待考</template>
+              <template v-else>{{ trustedTransitDays }} 天</template>
+            </dd>
+          </div>
           <div><dt>中转地</dt><dd>{{ cover.viaPoints.length ? cover.viaPoints.join('、') : '直封' }}</dd></div>
           <div><dt>给据邮件</dt><dd>{{ cover.registered ? '是' : '否' }}</dd></div>
           <div><dt>来源</dt><dd>{{ cover.acquireFrom || '未记' }}</dd></div>
@@ -284,11 +494,8 @@ function openRoute(): void {
 
       <section class="gb-panel">
         <h2 class="gb-panel__title">寄递事实时间轴</h2>
-        <p v-if="!chronological" class="cover-detail__warn">
-          日期先后有误：请核对寄出、中转与到达日期的顺序。
-        </p>
-        <p v-else-if="missingDateNodes.length" class="cover-detail__warn">
-          缺日警示：{{ missingDateNodes.map((n) => n.office).join('、') }} 尚未确定日期。
+        <p v-if="review.needsReview" class="cover-detail__warn">
+          时间轴存在待核对项（共 {{ review.issues.length }} 条），具体原因见页面顶部，在途天数暂不展示。
         </p>
         <RouteTimeline :nodes="timeline" @select="onTimelineSelect" />
       </section>
@@ -390,6 +597,157 @@ function openRoute(): void {
         <ScarceTag :level="activePostmark.scarceLevel" />
       </div>
     </el-dialog>
+
+    <el-dialog v-model="editDialog" title="编辑寄递事实" width="760px">
+      <el-alert
+        v-if="conflictCurrent"
+        class="cover-detail__conflict"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="`另一个标签页已在 ${formatTime(conflictTime) || '刚才'} 保存了该封，对方版本已保留，本次改动尚未写入`"
+      >
+        <p class="cover-detail__conflict-tip">
+          为避免覆盖对方的修改，请选择「载入对方版本」在最新数据上继续编辑，或「把我的改动存为草稿」稍后再合并。
+        </p>
+        <el-table v-if="conflictDiffs.length" :data="conflictDiffs" size="small" border>
+          <el-table-column prop="label" label="字段" width="110" />
+          <el-table-column prop="mine" label="本标签页" min-width="150" />
+          <el-table-column prop="theirs" label="对方已保存" min-width="150" />
+        </el-table>
+        <div class="cover-detail__conflict-actions">
+          <el-button size="small" type="primary" @click="adoptRemote">载入对方版本继续编辑</el-button>
+          <el-button size="small" @click="keepMineAsDraft">把我的改动存为草稿</el-button>
+        </div>
+      </el-alert>
+
+      <el-alert
+        v-else-if="hasEditDraft"
+        class="cover-detail__conflict"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="存在上次冲突时保留的本地草稿"
+      >
+        <div class="cover-detail__conflict-actions">
+          <el-button size="small" @click="restoreEditDraft">载入草稿</el-button>
+        </div>
+      </el-alert>
+
+      <el-form label-width="104px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="寄出地">
+              <el-input v-model="editForm.sentFrom" placeholder="如 上海" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="收件地">
+              <el-input v-model="editForm.sentTo" placeholder="如 南京" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="寄出日期">
+              <el-date-picker
+                v-model="editForm.postDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="到达日期">
+              <el-date-picker
+                v-model="editForm.arriveDate"
+                type="date"
+                value-format="YYYY-MM-DD"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="关联邮戳">
+              <el-select
+                v-model="editForm.cancelPmIds"
+                multiple
+                placeholder="选择销票邮戳"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="opt in editPostmarkOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="所属邮路">
+              <el-select v-model="editForm.routeId" placeholder="可不挂" clearable style="width: 100%">
+                <el-option
+                  v-for="opt in editRouteOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="中转地">
+              <el-select
+                v-model="editForm.viaPoints"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
+                placeholder="输入后回车添加"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="给据邮件">
+              <el-switch v-model="editForm.registered" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="品相">
+              <el-select v-model="editForm.conditionGrade" style="width: 100%">
+                <el-option v-for="g in CONDITION_GRADES" :key="g" :label="g" :value="g" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="购入价(元)">
+              <el-input-number v-model="editForm.price" :min="0" :precision="0" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="来源">
+              <el-input v-model="editForm.acquireFrom" placeholder="如 邮品交流 / 家族旧藏" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="藏册页位">
+              <el-input v-model="editForm.storageAlbum" placeholder="如 甲册 3 页" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="备注">
+              <el-input v-model="editForm.note" type="textarea" :rows="2" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+      </el-form>
+      <template #footer>
+        <el-button @click="editDialog = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="submitEdit">保存并重新核对</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -398,6 +756,29 @@ function openRoute(): void {
   color: #5d3325;
   font-size: 18px;
   margin-left: 8px;
+}
+.cover-detail__review {
+  margin-bottom: 16px;
+}
+.cover-detail__review-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.cover-detail__conflict {
+  margin-bottom: 14px;
+}
+.cover-detail__conflict-tip {
+  margin: 4px 0 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cover-detail__conflict-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
 }
 .cover-detail__actions {
   display: flex;

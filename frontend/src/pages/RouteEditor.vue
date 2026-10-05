@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import RouteTimeline from '@/components/common/RouteTimeline.vue'
 import { buildTimeline, useCoverRoute } from '@/hooks/useCoverRoute'
+import { useCoverReviews } from '@/hooks/useCoverReview'
 import { computeTotalDays, createRouteNode, useRouteStore } from '@/stores/routeStore'
 import { useCoverStore } from '@/stores/coverStore'
 import type { Cover } from '@/types/cover'
@@ -32,7 +33,9 @@ const selectedCoverId = ref<number | null>(null)
 
 const previewCoverId = computed<number | null>(() => selectedCoverId.value)
 
-const { cover: previewCover, timeline: previewTimeline, transitDays } = useCoverRoute(previewCoverId)
+const { cover: previewCover, timeline: previewTimeline, trustedTransitDays, review: previewReview } = useCoverRoute(previewCoverId)
+
+const coverReviews = useCoverReviews()
 
 const nodeTimeline = computed<TimelineNode[]>(() =>
   (route.value?.nodes ?? []).map((node) => ({
@@ -351,6 +354,14 @@ function nodeGanzhi(node: RouteNode): string {
           <li v-for="item in attachedCovers" :key="item.id">
             <strong>{{ item.coverNo }}</strong>
             <span>{{ item.sentFrom }} → {{ item.sentTo }}</span>
+            <el-tooltip
+              v-if="coverReviews.of(item.id).needsReview"
+              :content="coverReviews.of(item.id).summary"
+              placement="top"
+              :show-after="120"
+            >
+              <el-tag size="small" type="danger" effect="plain">待核对</el-tag>
+            </el-tooltip>
             <el-button size="small" link type="primary" @click="openCover(item)">详情</el-button>
             <el-button size="small" link type="danger" @click="detachCover(item)">摘除</el-button>
           </li>
@@ -362,10 +373,21 @@ function nodeGanzhi(node: RouteNode): string {
 
       <section class="gb-panel">
         <h2 class="gb-panel__title">按实寄封预览寄递时间轴</h2>
-        <p v-if="previewCover" class="route-editor__hint">
-          预览：{{ previewCover.coverNo }} · 在途
-          {{ transitDays == null ? '待考' : `${transitDays} 天` }}
-        </p>
+        <template v-if="previewCover">
+          <p class="route-editor__hint">
+            预览：{{ previewCover.coverNo }} ·
+            <template v-if="previewReview.needsReview">
+              <el-tag size="small" type="danger" effect="plain">待核对，在途天数暂不展示</el-tag>
+            </template>
+            <template v-else>
+              在途
+              {{ trustedTransitDays == null ? '待考' : `${trustedTransitDays} 天` }}
+            </template>
+          </p>
+          <ul v-if="previewReview.needsReview" class="route-editor__preview-issues">
+            <li v-for="(item, i) in previewReview.issues" :key="i">{{ item.message }}</li>
+          </ul>
+        </template>
         <RouteTimeline
           :nodes="previewCover ? previewTimeline : fallbackTimeline"
           title="寄递事实时间轴"
@@ -487,5 +509,12 @@ function nodeGanzhi(node: RouteNode): string {
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--gb-muted);
+}
+.route-editor__preview-issues {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #b03c26;
 }
 </style>

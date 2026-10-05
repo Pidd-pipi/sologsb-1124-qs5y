@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db } from '@/utils/db'
+import { emitChange } from '@/utils/catalogEvents'
 import type { PostalRoute, RouteNode } from '@/types/route'
 import { daysBetween, isValidDate } from '@/utils/dateRange'
 import { nextSerialNo, nowIso, uid } from '@/utils/id'
@@ -49,6 +50,7 @@ export const useRouteStore = defineStore('route', () => {
     }
     delete record.id
     const id = await db.routes.add(record)
+    emitChange('route', id)
     await load()
     return id
   }
@@ -57,11 +59,13 @@ export const useRouteStore = defineStore('route', () => {
     const next: Partial<PostalRoute> = { ...patch, updatedAt: nowIso() }
     if (patch.nodes) next.totalDays = computeTotalDays(patch.nodes)
     await db.routes.update(id, next)
+    emitChange('route', id)
     await load()
   }
 
   async function remove(id: number): Promise<void> {
     await db.routes.delete(id)
+    emitChange('route', id)
     await load()
   }
 

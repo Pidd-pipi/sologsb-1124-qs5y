@@ -5,6 +5,7 @@ import CoverCard from '@/components/common/CoverCard.vue'
 import ScarceTag from '@/components/common/ScarceTag.vue'
 import StampCard from '@/components/common/StampCard.vue'
 import { useCatalogFilter } from '@/hooks/useCatalogFilter'
+import { useCoverReviews } from '@/hooks/useCoverReview'
 import { useCoverStore } from '@/stores/coverStore'
 import { usePostmarkStore } from '@/stores/postmarkStore'
 import { useRouteStore } from '@/stores/routeStore'
@@ -27,6 +28,7 @@ const groups = reactive({ postmark: true, cover: true, route: true })
 const pmFilter = useCatalogFilter<Postmark>('postmark', computed(() => postmarkStore.list))
 const coverFilter = useCatalogFilter<Cover>('cover', computed(() => coverStore.list))
 const routeFilter = useCatalogFilter<PostalRoute>('route', computed(() => routeStore.list))
+const coverReviews = useCoverReviews()
 
 const eraHint = computed(() => {
   const range = parseEraRange(era.value)
@@ -172,6 +174,7 @@ function resetAll(): void {
           :cover="cover"
           :stamp-count="coverStore.frankingCount(cover)"
           :pm-count="coverStore.cancelCount(cover)"
+          :review="coverReviews.of(cover.id)"
           @select="openCover"
         />
       </div>
