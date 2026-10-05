@@ -2,9 +2,17 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { db, saveAsset } from '@/utils/db'
 import type { Cover, FrankingItem } from '@/types/cover'
+import type { Postmark } from '@/types/postmark'
 import type { StamplessEntry } from '@/types/stampentry'
+import { verifyCover } from '@/utils/verify'
 import { nextSerialNo, nowIso } from '@/utils/id'
 import type { ImagePayload } from './postmarkStore'
+
+/** 更新结果：成功或冲突 */
+export type UpdateResult =
+  | { ok: true; cover: Cover }
+  | { ok: false; reason: 'conflict'; current: Cover; baseVersion: number }
+  | { ok: false; reason: 'not_found' }
 
 export const useCoverStore = defineStore('cover', () => {
   const list = ref<Cover[]>([])
@@ -40,9 +48,21 @@ export const useCoverStore = defineStore('cover', () => {
       cancelPmIds: [...input.cancelPmIds],
       viaPoints: [...input.viaPoints],
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      version: 1,
+      verifyStatus: 'ok',
+      verifyReasons: []
     }
     delete record.id
+
+    // 新建后立即核对一次
+    const route = record.routeId ? await db.routes.get(record.routeId) : null
+    const pms = await Promise.all(record.cancelPmIds.map((pid) => db.postmarks.get(pid)))
+    const postmarks = pms.filter((p): p is Postmark => p != null)
+    const verification = verifyCover(record, route ?? null, postmarks)
+    record.verifyStatus = verification.status
+    record.verifyReasons = verification.reasons
+
     const id = await db.covers.add(record)
     for (const side of ['front', 'back'] as const) {
       const payload = images?.[side]
@@ -61,9 +81,42 @@ export const useCoverStore = defineStore('cover', () => {
     return id
   }
 
-  async function update(id: number, patch: Partial<Cover>): Promise<void> {
-    await db.covers.update(id, { ...patch, updatedAt: nowIso() })
+  /**
+   * 更新实寄封。若提供 baseVersion，则先做并发冲突检测：
+   * DB 中当前版本与 baseVersion 不一致时返回 conflict 结果，不覆盖对方已保存的内容。
+   * 更新后自动重新核对。
+   */
+  async function update(
+    id: number,
+    patch: Partial<Cover>,
+    baseVersion?: number
+  ): Promise<UpdateResult> {
+    const current = await db.covers.get(id)
+    if (!current) return { ok: false, reason: 'not_found' }
+
+    // 并发冲突检测
+    if (baseVersion != null && current.version !== baseVersion) {
+      return { ok: false, reason: 'conflict', current, baseVersion }
+    }
+
+    const updated: Cover = {
+      ...current,
+      ...patch,
+      version: current.version + 1,
+      updatedAt: nowIso()
+    }
+
+    // 重新核对
+    const route = updated.routeId ? await db.routes.get(updated.routeId) : null
+    const pms = await Promise.all(updated.cancelPmIds.map((pid) => db.postmarks.get(pid)))
+    const postmarks = pms.filter((p): p is Postmark => p != null)
+    const verification = verifyCover(updated, route ?? null, postmarks)
+    updated.verifyStatus = verification.status
+    updated.verifyReasons = verification.reasons
+
+    await db.covers.put(updated)
     await load()
+    return { ok: true, cover: updated }
   }
 
   async function remove(id: number): Promise<void> {
@@ -81,6 +134,39 @@ export const useCoverStore = defineStore('cover', () => {
 
   async function removeEntry(id: number): Promise<void> {
     await db.stampEntries.delete(id)
+    await load()
+  }
+
+  /** 重新核对单封：读取其邮路与关联邮戳，更新核对状态与原因。 */
+  async function reverifyCover(id: number): Promise<void> {
+    const cover = await db.covers.get(id)
+    if (!cover) return
+    const route = cover.routeId ? await db.routes.get(cover.routeId) : null
+    const pms = await Promise.all(cover.cancelPmIds.map((pid) => db.postmarks.get(pid)))
+    const postmarks = pms.filter((p): p is Postmark => p != null)
+    const result = verifyCover(cover, route ?? null, postmarks)
+    await db.covers.update(id, {
+      verifyStatus: result.status,
+      verifyReasons: result.reasons
+    })
+  }
+
+  /** 邮路节点变动后，重新核对挂到该邮路的所有封。 */
+  async function reverifyCoversForRoute(routeId: number): Promise<void> {
+    const covers = await db.covers.where('routeId').equals(routeId).toArray()
+    for (const cover of covers) {
+      if (cover.id != null) await reverifyCover(cover.id)
+    }
+    await load()
+  }
+
+  /** 邮戳年代变动后，重新核对关联了该邮戳的所有封。 */
+  async function reverifyCoversForPostmark(pmId: number): Promise<void> {
+    const all = await db.covers.toArray()
+    const affected = all.filter((c) => c.cancelPmIds.includes(pmId))
+    for (const cover of affected) {
+      if (cover.id != null) await reverifyCover(cover.id)
+    }
     await load()
   }
 
@@ -128,6 +214,9 @@ export const useCoverStore = defineStore('cover', () => {
     remove,
     addEntry,
     removeEntry,
+    reverifyCover,
+    reverifyCoversForRoute,
+    reverifyCoversForPostmark,
     byId,
     entriesOf,
     frankingCount,

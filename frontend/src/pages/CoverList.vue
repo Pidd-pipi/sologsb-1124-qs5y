@@ -208,6 +208,13 @@ function routeLabel(routeId: number | null): string {
             <el-option label="仅平信" value="no" />
           </el-select>
         </el-form-item>
+        <el-form-item label="核对状态">
+          <el-select v-model="filters.verifyStatus" style="width: 120px">
+            <el-option label="全部" value="" />
+            <el-option label="待核对" value="pending" />
+            <el-option label="已核对" value="ok" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="排序">
           <el-select v-model="filters.sortKey" style="width: 150px">
             <el-option label="最近更新" value="recent" />
@@ -252,6 +259,19 @@ function routeLabel(routeId: number | null): string {
           <el-tag size="small" type="warning" effect="plain">
             {{ coverStore.cancelCount(row) }} 枚
           </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="核对状态" width="100" align="center">
+        <template #default="{ row }">
+          <el-tag
+            v-if="row.verifyStatus === 'pending'"
+            size="small"
+            type="warning"
+            effect="dark"
+          >
+            待核对
+          </el-tag>
+          <el-tag v-else size="small" type="success" effect="plain">已核对</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="品相" width="90">

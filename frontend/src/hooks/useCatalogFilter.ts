@@ -22,6 +22,8 @@ export interface CatalogFilters {
   conditionGrade: string
   /** 是否给据邮件 */
   registered: '' | 'yes' | 'no'
+  /** 核对状态 */
+  verifyStatus: '' | 'pending' | 'ok'
   /** 运输方式 */
   transport: string
   sortKey: SortKey
@@ -39,6 +41,7 @@ export function defaultFilters(): CatalogFilters {
     scarceLevel: '',
     conditionGrade: '',
     registered: '',
+    verifyStatus: '',
     transport: '',
     sortKey: 'recent'
   }
@@ -145,6 +148,7 @@ export function useCatalogFilter<T>(
         }
         if (filters.registered === 'yes' && row.registered !== true) return false
         if (filters.registered === 'no' && row.registered !== false) return false
+        if (filters.verifyStatus && textOf(row.verifyStatus) !== filters.verifyStatus) return false
         if (office) {
           const hay = `${textOf(row.sentFrom)} ${textOf(row.sentTo)}`.toLowerCase()
           if (!hay.includes(office)) return false

@@ -11,7 +11,7 @@ import type { AssetOwnerType, AssetSide, CatalogAsset } from '@/types/asset'
 
 export const DB_NAME = 'gbpostmark'
 /** 当前数据结构版本号，升级迁移写在下面对应的 version() 中 */
-export const DB_VERSION = 2
+export const DB_VERSION = 3
 
 export class GbPostmarkDatabase extends Dexie {
   postmarks!: Table<Postmark, number>
@@ -71,6 +71,28 @@ export class GbPostmarkDatabase extends Dexie {
           .modify((rt: Partial<PostalRoute>) => {
             if (!Array.isArray(rt.nodes)) rt.nodes = []
             if (typeof rt.totalDays !== 'number') rt.totalDays = 0
+          })
+      })
+
+    // v3：实寄封增加核对状态与版本号字段（待核对标记 + 多标签并发修改冲突检测）
+    this.version(DB_VERSION)
+      .stores({
+        postmarks:
+          '++id, pmNo, type, office, province, yearFrom, yearTo, scarceLevel, inkColor, bilingual',
+        covers:
+          '++id, coverNo, sentFrom, sentTo, postDate, conditionGrade, registered, routeId, acquireFrom, verifyStatus',
+        routes: '++id, routeNo, name, era, transport, totalDays',
+        stampEntries: '++id, coverId, stampName, variety, issueYear',
+        assets: '++id, ownerType, ownerId, side, [ownerType+ownerId]'
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('covers')
+          .toCollection()
+          .modify((cv: Partial<Cover>) => {
+            if (!cv.verifyStatus) cv.verifyStatus = 'ok'
+            if (!Array.isArray(cv.verifyReasons)) cv.verifyReasons = []
+            if (typeof cv.version !== 'number') cv.version = 1
           })
       })
   }
@@ -357,8 +379,14 @@ function seedRoutes(): PostalRoute[] {
 }
 
 function seedCovers(): Cover[] {
+  const base = (cv: Omit<Cover, 'verifyStatus' | 'verifyReasons' | 'version'>): Cover => ({
+    ...cv,
+    verifyStatus: 'ok',
+    verifyReasons: [],
+    version: 1
+  })
   return [
-    {
+    base({
       id: 1,
       coverNo: 'CV-0001',
       sentFrom: '上海',
@@ -382,8 +410,8 @@ function seedCovers(): Cover[] {
       note: '挂号实寄，封背有三处中转戳，戳面完整。',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
-    },
-    {
+    }),
+    base({
       id: 2,
       coverNo: 'CV-0002',
       sentFrom: '天津',
@@ -404,8 +432,8 @@ function seedCovers(): Cover[] {
       note: '平信，封舌有裂口，票戳关系清晰。',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
-    },
-    {
+    }),
+    base({
       id: 3,
       coverNo: 'CV-0003',
       sentFrom: '广州',
@@ -429,8 +457,8 @@ function seedCovers(): Cover[] {
       note: '封体有水渍，邮路节点仍可辨读。',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
-    },
-    {
+    }),
+    base({
       id: 4,
       coverNo: 'CV-0004',
       sentFrom: '南京',
@@ -451,7 +479,7 @@ function seedCovers(): Cover[] {
       note: '到达日期待考，暂按邮路班期推定。',
       createdAt: SEED_TS,
       updatedAt: SEED_TS
-    }
+    })
   ]
 }
 

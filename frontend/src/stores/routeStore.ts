@@ -4,6 +4,7 @@ import { db } from '@/utils/db'
 import type { PostalRoute, RouteNode } from '@/types/route'
 import { daysBetween, isValidDate } from '@/utils/dateRange'
 import { nextSerialNo, nowIso, uid } from '@/utils/id'
+import { useCoverStore } from '@/stores/coverStore'
 
 /** 由节点日期计算全程天数：取首个与末个有效日期的间隔。 */
 export function computeTotalDays(nodes: RouteNode[]): number {
@@ -58,6 +59,9 @@ export const useRouteStore = defineStore('route', () => {
     if (patch.nodes) next.totalDays = computeTotalDays(patch.nodes)
     await db.routes.update(id, next)
     await load()
+    // 邮路节点变动后，重新核对挂到该邮路的实寄封
+    const coverStore = useCoverStore()
+    await coverStore.reverifyCoversForRoute(id)
   }
 
   async function remove(id: number): Promise<void> {

@@ -3,6 +3,9 @@
 /** 品相 */
 export type ConditionGrade = '上品' | '中品' | '下品'
 
+/** 核对状态：ok 已核对 / pending 待核对（关联信息变动后需重新核对） */
+export type VerifyStatus = 'ok' | 'pending'
+
 /** 贴票构成：票种 + 面值 + 枚数 */
 export interface FrankingItem {
   stampName: string
@@ -43,6 +46,12 @@ export interface Cover {
   note: string
   createdAt: string
   updatedAt: string
+  /** 核对状态：关联邮路节点或邮戳年代变动后标记为待核对 */
+  verifyStatus: VerifyStatus
+  /** 待核对原因列表，如「缺少到达日期」「日期倒挂」「超出邮戳使用年代」 */
+  verifyReasons: string[]
+  /** 版本号，每次更新递增，用于多标签页并发修改冲突检测 */
+  version: number
 }
 
 export const CONDITION_GRADES: ConditionGrade[] = ['上品', '中品', '下品']
@@ -68,6 +77,9 @@ export function createEmptyCover(): Cover {
     backImage: '',
     note: '',
     createdAt: '',
-    updatedAt: ''
+    updatedAt: '',
+    verifyStatus: 'ok',
+    verifyReasons: [],
+    version: 1
   }
 }

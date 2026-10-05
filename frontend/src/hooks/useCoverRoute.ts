@@ -6,67 +6,11 @@ import { computed, ref, watch, type ComputedRef, type Ref } from 'vue'
 import { db } from '@/utils/db'
 import type { Cover } from '@/types/cover'
 import type { PostalRoute, TimelineNode } from '@/types/route'
+import { buildTimeline } from '@/utils/timeline'
 import { daysBetween, isValidDate } from '@/utils/dateRange'
 
-/** 由封与邮路拼时间轴：寄出 → 中转（邮路节点 / 中转地） → 到达。 */
-export function buildTimeline(cover: Cover | null, route: PostalRoute | null): TimelineNode[] {
-  if (!cover) return []
-  const nodes: TimelineNode[] = [
-    {
-      key: 'sent',
-      label: '寄出',
-      office: cover.sentFrom || '寄出地待考',
-      date: cover.postDate,
-      mark: '收寄日戳',
-      kind: 'sent'
-    }
-  ]
-
-  const transit: TimelineNode[] = []
-  if (route && route.nodes.length) {
-    for (const node of route.nodes) {
-      const isFirst = node.office === cover.sentFrom
-      const isLast = node.office === cover.sentTo
-      if (isFirst) continue
-      transit.push({
-        key: node.key,
-        label: isLast ? '到达' : '中转',
-        office: node.office || '节点待补',
-        date: node.arriveDate,
-        mark: node.transitMark || '中转戳待补',
-        kind: isLast ? 'arrive' : 'transit'
-      })
-    }
-  } else {
-    cover.viaPoints.forEach((point, index) => {
-      transit.push({
-        key: `via-${index}`,
-        label: '中转',
-        office: point,
-        date: '',
-        mark: '中转戳待考',
-        kind: 'transit'
-      })
-    })
-  }
-
-  const hasArrive = transit.some((n) => n.kind === 'arrive')
-  nodes.push(...transit)
-  if (!hasArrive) {
-    nodes.push({
-      key: 'arrive',
-      label: '到达',
-      office: cover.sentTo || '收件地待考',
-      date: cover.arriveDate,
-      mark: '到达戳',
-      kind: 'arrive'
-    })
-  } else {
-    const last = nodes[nodes.length - 1]
-    if (!last.date && cover.arriveDate) last.date = cover.arriveDate
-  }
-  return nodes
-}
+// 重新导出，保持对旧调用方的兼容
+export { buildTimeline } from '@/utils/timeline'
 
 export function useCoverRoute(coverId: Ref<number | null> | ComputedRef<number | null>) {
   const cover = ref<Cover | null>(null)

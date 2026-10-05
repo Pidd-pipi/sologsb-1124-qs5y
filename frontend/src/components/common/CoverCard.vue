@@ -36,6 +36,9 @@ function routeText(cover: Cover): string {
       <header class="cover-card__head">
         <span class="cover-card__no">{{ cover.coverNo }}</span>
         <span class="cover-card__tags">
+          <el-tag v-if="cover.verifyStatus === 'pending'" size="small" type="warning" effect="dark">
+            待核对
+          </el-tag>
           <el-tag v-if="cover.registered" size="small" type="danger" effect="plain">给据</el-tag>
           <ScarceTag :level="cover.conditionGrade" kind="grade" />
         </span>

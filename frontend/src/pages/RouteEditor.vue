@@ -96,7 +96,10 @@ const fallbackTimeline = computed<TimelineNode[]>(() => {
       backImage: '',
       note: '',
       createdAt: '',
-      updatedAt: ''
+      updatedAt: '',
+      verifyStatus: 'ok',
+      verifyReasons: [],
+      version: 1
     },
     route.value
   )
@@ -194,14 +197,29 @@ async function attachCover(): Promise<void> {
     ElMessage.warning('请选择要挂到此邮路的实寄封')
     return
   }
-  await coverStore.update(coverId, { routeId: id })
-  ElMessage.success('实寄封已挂到该邮路')
+  const target = coverStore.byId(coverId)
+  const result = await coverStore.update(coverId, { routeId: id }, target?.version)
+  if (result.ok) {
+    ElMessage.success('实寄封已挂到该邮路')
+  } else if (result.reason === 'conflict') {
+    await coverStore.load()
+    ElMessage.warning('该封已被其他标签页修改，已重新加载，请重试')
+  } else {
+    ElMessage.error('未找到该实寄封，可能已被删除')
+  }
 }
 
 async function detachCover(cover: Cover): Promise<void> {
   if (typeof cover.id !== 'number') return
-  await coverStore.update(cover.id, { routeId: null })
-  ElMessage.success('已从邮路摘除')
+  const result = await coverStore.update(cover.id, { routeId: null }, cover.version)
+  if (result.ok) {
+    ElMessage.success('已从邮路摘除')
+  } else if (result.reason === 'conflict') {
+    await coverStore.load()
+    ElMessage.warning('该封已被其他标签页修改，已重新加载，请重试')
+  } else {
+    ElMessage.error('未找到该实寄封，可能已被删除')
+  }
 }
 
 function openCover(cover: Cover): void {
@@ -351,6 +369,14 @@ function nodeGanzhi(node: RouteNode): string {
           <li v-for="item in attachedCovers" :key="item.id">
             <strong>{{ item.coverNo }}</strong>
             <span>{{ item.sentFrom }} → {{ item.sentTo }}</span>
+            <el-tag
+              v-if="item.verifyStatus === 'pending'"
+              size="small"
+              type="warning"
+              effect="dark"
+            >
+              待核对
+            </el-tag>
             <el-button size="small" link type="primary" @click="openCover(item)">详情</el-button>
             <el-button size="small" link type="danger" @click="detachCover(item)">摘除</el-button>
           </li>
@@ -363,8 +389,20 @@ function nodeGanzhi(node: RouteNode): string {
       <section class="gb-panel">
         <h2 class="gb-panel__title">按实寄封预览寄递时间轴</h2>
         <p v-if="previewCover" class="route-editor__hint">
-          预览：{{ previewCover.coverNo }} · 在途
-          {{ transitDays == null ? '待考' : `${transitDays} 天` }}
+          预览：{{ previewCover.coverNo }}
+          <el-tag
+            v-if="previewCover.verifyStatus === 'pending'"
+            size="small"
+            type="warning"
+            effect="dark"
+            style="margin-left: 6px"
+          >
+            待核对
+          </el-tag>
+          <template v-if="previewCover.verifyStatus !== 'pending'">
+            · 在途 {{ transitDays == null ? '待考' : `${transitDays} 天` }}
+          </template>
+          <template v-else> · 在途天数待核对</template>
         </p>
         <RouteTimeline
           :nodes="previewCover ? previewTimeline : fallbackTimeline"

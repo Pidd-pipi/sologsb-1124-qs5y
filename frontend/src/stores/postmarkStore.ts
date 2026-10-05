@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { db, saveAsset } from '@/utils/db'
 import type { Postmark } from '@/types/postmark'
 import { nextSerialNo, nowIso } from '@/utils/id'
+import { useCoverStore } from '@/stores/coverStore'
 
 export interface ImagePayload {
   dataUrl: string
@@ -57,6 +58,9 @@ export const usePostmarkStore = defineStore('postmark', () => {
   async function update(id: number, patch: Partial<Postmark>): Promise<void> {
     await db.postmarks.update(id, { ...patch, updatedAt: nowIso() })
     await load()
+    // 邮戳年代变动后，重新核对关联了该邮戳的实寄封
+    const coverStore = useCoverStore()
+    await coverStore.reverifyCoversForPostmark(id)
   }
 
   async function remove(id: number): Promise<void> {
